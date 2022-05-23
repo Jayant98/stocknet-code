@@ -12,7 +12,7 @@ import sys
 class PathParser:
 
     def __init__(self, config_path):
-        self.root = '/content/stocknet-BERT-orig/'
+        self.root = '../'
         self.log = os.path.join(self.root, config_path['log'])
 
         self.data = os.path.join(self.root, config_path['data'])
@@ -28,14 +28,7 @@ class PathParser:
         self.vocab = os.path.join(self.res, config_path['vocab_tweet'])
 
 config_fp = os.path.join(os.path.dirname(__file__), 'config.yml')
-
-with open(config_fp, "r") as stream:
-    try:
-        config = yaml.safe_load(stream)
-    except yaml.YAMLError as exc:
-        print(exc)
-
-#config = yaml.load(file(config_fp, 'r'))
+config = yaml.load(file(config_fp, 'r'))
 config_model = config['model']
 
 dates = config['dates']
@@ -61,4 +54,4 @@ logger.addHandler(console_handler)
 
 with io.open(str(path_parser.vocab), 'r', encoding='utf-8') as vocab_f:
     vocab = json.load(vocab_f)
-    vocab_size = len(vocab) + 2  # for unk
+    vocab_size = len(vocab) + 1  # for unk

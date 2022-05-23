@@ -1,11 +1,11 @@
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+#!/usr/local/bin/python
+from __future__ import print_function
 import os
 import tensorflow as tf
 import numpy as np
 import neural as neural
-import tensorflow.compat.v1.distributions as ds
-from tensorflow.keras.layers import BatchNormalization as batch_norm
+import tensorflow.contrib.distributions as ds
+from tensorflow.contrib.layers import batch_norm
 from ConfigLoader import logger, ss_size, vocab_size, config_model, path_parser
 
 
@@ -40,8 +40,8 @@ class Model:
 
         self.weight_init = config_model['weight_init']
         uniform = True if self.weight_init == 'xavier-uniform' else False
-        self.initializer = tf.keras.initializers.glorot_uniform()
-        self.bias_initializer = tf.constant_initializer(0.0)
+        self.initializer = tf.contrib.layers.xavier_initializer(uniform=uniform)
+        self.bias_initializer = tf.constant_initializer(0.0, dtype=tf.float32)
 
         self.word_embed_type = config_model['word_embed_type']
 
@@ -88,7 +88,7 @@ class Model:
         name_pattern_train = 'batch-{0}.opt-{1}.lr-{2}-drop-{3}-cell-{4}'
         name_train = name_pattern_train.format(self.batch_size_for_name, self.opt, self.lr, self.dropout_train_mel_in, self.mel_cell_type)
 
-        name_tuple = (self.mode, name_max_n, name_input_type, name_key, name_train, str(self.h_size), str(self.g_size))
+        name_tuple = (self.mode, name_max_n, name_input_type, name_key, name_train)
         self.model_name = '_'.join(name_tuple)
 
         # paths
@@ -119,10 +119,10 @@ class Model:
             self.n_words_ph = tf.placeholder(dtype=tf.int32, shape=[None, self.max_n_days, self.max_n_msgs])
             self.n_msgs_ph = tf.placeholder(dtype=tf.int32, shape=[None, self.max_n_days])
             self.y_ph = tf.placeholder(dtype=tf.float32, shape=[None, self.max_n_days, self.y_size])  # 2-d vectorised movement
+            self.mv_percent_ph = tf.placeholder(dtype=tf.int32, shape=[None, self.max_n_days])  # movement percent
+            self.price_ph = tf.placeholder(dtype=tf.float32, shape=[None, self.max_n_days, 3])  # high, low, close
             self.word_ph = tf.placeholder(dtype=tf.int32, shape=[None, self.max_n_days, self.max_n_msgs, self.max_n_words])
             self.ss_index_ph = tf.placeholder(dtype=tf.int32, shape=[None, self.max_n_days, self.max_n_msgs])
-            self.bert_embds = tf.placeholder(dtype=tf.float32, shape=[None, self.max_n_days, self.max_n_msgs, self.max_n_words, self.word_embed_size])
-
 
             # dropout
             self.dropout_mel_in = tf.placeholder_with_default(self.dropout_train_mel_in, shape=())
@@ -140,14 +140,16 @@ class Model:
     def _create_msg_embed_layer_in(self):
         """
             acquire the inputs for MEL.
+
             Input:
                 word_embed: batch_size * max_n_days * max_n_msgs * max_n_words * word_embed_size
+
             Output:
                 mel_in: same as word_embed
         """
         with tf.name_scope('mel_in'):
             with tf.variable_scope('mel_in'):
-                mel_in = self.bert_embds
+                mel_in = self.word_embed
                 if self.use_in_bn:
                     mel_in = neural.bn(mel_in, self.is_training_phase, bn_scope='bn-mel_inputs')
                 self.mel_in = tf.nn.dropout(mel_in, keep_prob=1-self.dropout_mel_in)
@@ -156,6 +158,7 @@ class Model:
         """
             Input:
                 mel_in: same as word_embed
+
             Output:
                 msg_embed: batch_size * max_n_days * max_n_msgs * msg_embed_size
         """
@@ -169,7 +172,7 @@ class Model:
             out_f, out_b = out
             ss_indices = tf.reshape(daily_ss_index_vec, [-1, 1])
 
-            msg_ids = tf.constant(list(range(0, self.max_n_msgs)), dtype=tf.int32, shape=[self.max_n_msgs, 1])  # [0, 1, 2, ...]
+            msg_ids = tf.constant(range(0, self.max_n_msgs), dtype=tf.int32, shape=[self.max_n_msgs, 1])  # [0, 1, 2, ...]
             out_id = tf.concat([msg_ids, ss_indices], axis=1)
             # fw, bw and average
             mel_h_f, mel_h_b = tf.gather_nd(out_f, out_id), tf.gather_nd(out_b, out_id)
@@ -187,7 +190,7 @@ class Model:
 
         with tf.name_scope('mel'):
             with tf.variable_scope('mel_iter', reuse=tf.AUTO_REUSE):
-                '''if self.mel_cell_type == 'ln-lstm':
+                if self.mel_cell_type == 'ln-lstm':
                     mel_cell_f = tf.contrib.rnn.LayerNormBasicLSTMCell(self.mel_h_size)
                     mel_cell_b = tf.contrib.rnn.LayerNormBasicLSTMCell(self.mel_h_size)
                 elif self.mel_cell_type == 'gru':
@@ -202,15 +205,15 @@ class Model:
 
                 mel_init_f = mel_cell_f.zero_state([self.max_n_msgs], tf.float32)
                 mel_init_b = mel_cell_f.zero_state([self.max_n_msgs], tf.float32)
-                '''
-                
+
                 msg_embed_shape = (self.batch_size, self.max_n_days, self.max_n_msgs, self.msg_embed_size)
-                msg_embed = tf.reshape(self.mel_in, shape=msg_embed_shape)
+                msg_embed = tf.reshape(_for_one_batch(), shape=msg_embed_shape)
                 self.msg_embed = tf.nn.dropout(msg_embed, keep_prob=1-self.dropout_mel, name='msg_embed')
 
     def _create_corpus_embed(self):
         """
             msg_embed: batch_size * max_n_days * max_n_msgs * msg_embed_size
+
             => corpus_embed: batch_size * max_n_days * corpus_embed_size
         """
         with tf.name_scope('corpus_embed'):
@@ -233,12 +236,14 @@ class Model:
     def _build_mie(self):
         """
             Create market information encoder.
+
             corpus_embed: batch_size * max_n_days * corpus_embed_size
             price: batch_size * max_n_days * 3
             => x: batch_size * max_n_days * x_size
         """
         with tf.name_scope('mie'):
-            self.price_size = 0
+            self.price = self.price_ph
+            self.price_size = 3
 
             if self.variant_type == 'tech':
                 self.x = self.price
@@ -251,8 +256,8 @@ class Model:
                     self.x = self.corpus_embed
                     self.x_size = self.corpus_embed_size
                 else:
-                    self.x = self.corpus_embed
-                    self.x_size = self.corpus_embed_size
+                    self.x = tf.concat([self.corpus_embed, self.price], axis=2)
+                    self.x_size = self.corpus_embed_size + self.price_size
 
     def _create_vmd_with_h_rec(self):
         with tf.name_scope('vmd'):
@@ -381,6 +386,7 @@ class Model:
     def _create_vmd_with_zh_rec(self):
         """
             Create a variational movement decoder.
+
             x: batch_size * max_n_days * vmd_in_size
             => vmd_h: batch_size * max_n_days * vmd_h_size
             => z: batch_size * max_n_days * vmd_z_size
@@ -499,6 +505,7 @@ class Model:
     def _create_discriminative_vmd(self):
         """
             Create a discriminative movement decoder.
+
             x: batch_size * max_n_days * vmd_in_size
             => vmd_h: batch_size * max_n_days * vmd_h_size
             => z: batch_size * max_n_days * vmd_z_size
@@ -615,6 +622,7 @@ class Model:
     def _create_generative_ata(self):
         """
              calculate loss.
+
              g: batch_size * max_n_days * g_size
              y: batch_size * max_n_days * y_size
              kl_loss: batch_size * max_n_days
@@ -643,6 +651,7 @@ class Model:
     def _create_discriminative_ata(self):
         """
              calculate discriminative loss.
+
              g: batch_size * max_n_days * g_size
              y: batch_size * max_n_days * y_size
              => loss: batch_size
@@ -675,15 +684,16 @@ class Model:
                 optimizer = tf.train.MomentumOptimizer(learning_rate=decayed_lr, momentum=self.momentum)
             else:
                 optimizer = tf.train.AdamOptimizer(self.lr)
-            gradients, variables = list(zip(*optimizer.compute_gradients(self.loss)))
+            gradients, variables = zip(*optimizer.compute_gradients(self.loss))
             gradients, _ = tf.clip_by_global_norm(gradients, self.clip)
-            self.optimize = optimizer.apply_gradients(list(zip(gradients, variables)))
+            self.optimize = optimizer.apply_gradients(zip(gradients, variables))
             self.global_step = tf.assign_add(self.global_step, 1)
 
     def assemble_graph(self):
         logger.info('Start graph assembling...')
         with tf.device('/device:GPU:0'):
             self._build_placeholders()
+            self._build_embeds()
             self._build_mie()
             self._build_vmd()
             self._build_temporal_att()

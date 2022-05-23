@@ -8,7 +8,7 @@ if __name__ == '__main__':
     model.assemble_graph()
 
     silence_step = 0
-    skip_step = 20
+    skip_step = 1
 
     exe = Executor(model, silence_step=silence_step, skip_step=skip_step)
 

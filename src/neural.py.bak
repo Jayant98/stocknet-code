@@ -1,7 +1,7 @@
 #!/usr/local/bin/python
 import tensorflow as tf
 import math
-import tensorflow.compat.v1.distributions as ds
+import tensorflow.contrib.distributions as ds
 
 
 def bn(input, is_training_phase, bn_scope):
@@ -29,7 +29,7 @@ def softmax(input, bn_scope=None, is_training_phase=None):
 
 
 def iter(size, func, iter_arg, iter_arg2=None, iter_arg3=None, **kwargs):
-    print(("Size",size))
+    print("Size",size)
     ta = tf.TensorArray(tf.float32, size=size)
     loop_init = (0, ta)
     cond = lambda i, _: i < size

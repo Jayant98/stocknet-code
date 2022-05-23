@@ -15,8 +15,6 @@ import pandas as pd
 
 from nltk.tokenize import word_tokenize
 
-from keras.preprocessing.sequence import pad_sequences
-
 class DataPipe:
 
     def __init__(self):
@@ -30,7 +28,6 @@ class DataPipe:
         self.max_n_days = config_model['max_n_days']
         self.max_n_words = config_model['max_n_words']
         self.max_n_msgs = config_model['max_n_msgs']
-        self.emb_path = config_model['emb_path']
 
         self.word_embed_size = config_model['word_embed_size']
         self.y_size = config_model['y_size']
@@ -43,10 +40,8 @@ class DataPipe:
         self.word_embed_type = config_model['word_embed_type']
         self.word_embed_size = config_model['word_embed_size']
 
-        
-        self.parlvote_path = config_model['parlvote_path']
         self.data = self.init_df()
-        self.PRE_TRAINED_MODEL_NAME = 'roberta-base' 
+
         
 
         
@@ -102,19 +97,18 @@ class DataPipe:
 
     
     def init_df(self):
-        df = pd.read_csv(self.parlvote_path)
+        df = pd.read_csv('/content/drive/MyDrive/stocknet-code/ParlVote_concat.csv')
         all_ids = np.unique(df['speaker_id'])
-        
 
         speaker_map = {}
         speaker_party = {}
         for ind, row in df.iterrows():
-          if row['speaker_id'] in list(speaker_map.keys()):
-            speaker_map[row['speaker_id']].append([ind, row['vote']])
+          if row['speaker_id'] in speaker_map.keys():
+            speaker_map[row['speaker_id']].append([row['speech'], row['vote']])
           else:
-            speaker_map[row['speaker_id']] = [[ind, row['vote']]]
+            speaker_map[row['speaker_id']] = [[row['speech'], row['vote']]]
           
-          if row['speaker_id'] in list(speaker_party.keys()):
+          if row['speaker_id'] in speaker_party.keys():
             speaker_party[row['speaker_id']].append(row['party'])
           else:
             speaker_party[row['speaker_id']] = [row['party']]
@@ -124,7 +118,7 @@ class DataPipe:
           windowed_speaker_data = {}
           window=10
 
-          for key in list(speaker_map.keys()):
+          for key in speaker_map.keys():
             data = speaker_map[key]
             if (len(data)>window+1):
               for i in range(len(data)-window):
@@ -133,7 +127,7 @@ class DataPipe:
                 to_train = data[start:end]
                 to_pred = data[end]
 
-                if (key in list(windowed_speaker_data.keys())):
+                if (key in windowed_speaker_data.keys()):
                   windowed_speaker_data[key].append([to_train,to_pred])
                 else:
                   windowed_speaker_data[key] = [[to_train,to_pred]]
@@ -164,10 +158,10 @@ class DataPipe:
         else:
           min_ind = int(0.8*len(self.data[speaker]))
           max_ind = len(self.data[speaker])
-        nday_tokenized = np.zeros((self.max_n_days,self.max_n_msgs,self.max_n_words, self.word_embed_size))
-        nday_labs = np.zeros((self.max_n_days,2))
-        ss_index = np.zeros((self.max_n_days,self.max_n_msgs))
-        n_word = np.zeros((self.max_n_days,self.max_n_msgs))
+        nday_tokenized = np.zeros((11,self.max_n_msgs,self.max_n_words))
+        nday_labs = np.zeros((11,2))
+        ss_index = np.zeros((11,self.max_n_msgs))
+        n_word = np.zeros((11,self.max_n_msgs))
         for speech_ind in range(min_ind, max_ind):
             sample = speaker_data[speech_ind]
             train_sample = sample[0]
@@ -176,31 +170,30 @@ class DataPipe:
             for sub_sample_ind in range(len(train_sample)):
               current_sample = train_sample[sub_sample_ind]
               
-              file_id = current_sample[0]
-              embds = np.load((self.emb_path + str(file_id)+".npy"))
+              tokenized = word_tokenize(current_sample[0].decode('utf8'))[:self.max_n_words]
               if (current_sample[1] == 1):
                 nday_labs[sub_sample_ind] = np.array([0.0, 1.0])
               else:
                 nday_labs[sub_sample_ind]  = np.array([1.0, 0.0])
               
-              ss_index[sub_sample_ind][0] = 1 - 1 # might require change
-              n_word[sub_sample_ind][0] = 1 # might require change
-              
-              nday_tokenized[sub_sample_ind][0] = embds
+              ss_index[sub_sample_ind][0] = len(tokenized)-1
+              n_word[sub_sample_ind][0] = len(tokenized)
+              tokenized = self._convert_words_to_ids(tokenized, vocab_id_dict)
+              nday_tokenized[sub_sample_ind][0][:len(tokenized)] = (np.array(tokenized))
             
             if (eval_sample[1] == 1):
               e_label = np.array([0.0, 1.0]) 
             else:
               e_label = np.array([1.0, 0.0] ) 
-              
-            eval_embds = np.load((self.emb_path + str(eval_sample[0])+".npy"))
+            eval_tokenized = word_tokenize(eval_sample[0].decode('utf8'))[:self.max_n_words]
 
-            ss_index[-1][0] = 1-1
+            ss_index[-1][0] = len(eval_tokenized)-1
             
-            n_word[-1][0] = 0
+            n_word[-1][0] = len(eval_tokenized)
             
+            eval_tokenized = self._convert_words_to_ids(eval_tokenized, vocab_id_dict)
               
-            nday_tokenized[-1][0] = eval_embds
+            nday_tokenized[-1][0][:len(eval_tokenized)] = (np.array(eval_tokenized))
             nday_labs[-1] = (e_label)
               
             
@@ -217,12 +210,13 @@ class DataPipe:
             yield sample_dict
 
 
+
+
     def batch_gen(self, phase):
         batch_size = self._get_batch_size(phase="train")
         vocab_id_dict = self.index_token(vocab, key='token')
 
-        all_speakers = (list(self.data.keys()))
-        all_speakers.sort()
+        all_speakers = self.data.keys()
         
         generators = [self.sample_gen_from_one_stock(s, phase, vocab_id_dict) for s in all_speakers]
         # logger.info('{0} Generators prepared...'.format(len(generators)))
@@ -234,7 +228,7 @@ class DataPipe:
             T_batch = np.zeros([batch_size, ], dtype=np.int32) #?
             y_batch = np.zeros([batch_size, self.max_n_days, self.y_size], dtype=np.float32) #?
 
-            word_batch = np.zeros([batch_size, self.max_n_days, self.max_n_msgs, self.max_n_words, self.word_embed_size], dtype=np.float32)
+            word_batch = np.zeros([batch_size, self.max_n_days, self.max_n_msgs, self.max_n_words], dtype=np.float32)
             n_msgs_batch = [[[1] for i in range(self.max_n_days)] for j in range(batch_size)]
             n_words_batch = np.zeros([batch_size, self.max_n_days,self.max_n_msgs], dtype=np.int32)
             ss_index_batch = np.zeros([batch_size, self.max_n_days, self.max_n_msgs], dtype=np.int32)
@@ -280,4 +274,23 @@ class DataPipe:
               print('All generators exhausted')
               break
 
+    def init_word_table(self):
+        word_table_init = np.random.random((vocab_size, self.word_embed_size)) * 2 - 1  # [-1.0, 1.0]
+
+        if self.word_embed_type is not 'rand':
+            n_replacement = 0
+            vocab_id_dict = self.index_token(vocab, key='token')
+
+            with io.open(self.glove_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    tuples = line.split()
+                    word, embed = tuples[0], [float(embed_col) for embed_col in tuples[1:]]
+                    if word in ['<unk>', 'unk']:  # unify UNK
+                        word = 'UNK'
+                    if word in vocab_id_dict:
+                        n_replacement += 1
+                        word_id = vocab_id_dict[word]
+                        word_table_init[word_id] = embed
+
+        return word_table_init
     
